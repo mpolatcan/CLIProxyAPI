@@ -260,6 +260,31 @@ func ConvertGeminiResponseToClaude(_ context.Context, _ string, originalRequestR
 				output = output + template + "\n\n\n"
 			}
 		}
+	} else if bytes.Contains(rawJSON, []byte(`"finishReason"`)) && (*param).(*Params).HasContent {
+		// Fallback: Gemini 3 may not return usageMetadata, try alternative paths
+		// Check for response.usageMetadata (used by some Gemini endpoints)
+		altUsageResult := gjson.GetBytes(rawJSON, "response.usageMetadata")
+		if altUsageResult.Exists() {
+			if candidatesTokenCount := altUsageResult.Get("candidatesTokenCount"); candidatesTokenCount.Exists() {
+				output = output + "event: content_block_stop\n"
+				output = output + fmt.Sprintf(`data: {"type":"content_block_stop","index":%d}`, (*param).(*Params).ResponseIndex)
+				output = output + "\n\n\n"
+
+				output = output + "event: message_delta\n"
+				output = output + `data: `
+
+				template := `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":0,"output_tokens":0}}`
+				if usedTool {
+					template = `{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"input_tokens":0,"output_tokens":0}}`
+				}
+
+				thoughtsTokenCount := altUsageResult.Get("thoughtsTokenCount").Int()
+				template, _ = sjson.Set(template, "usage.output_tokens", candidatesTokenCount.Int()+thoughtsTokenCount)
+				template, _ = sjson.Set(template, "usage.input_tokens", altUsageResult.Get("promptTokenCount").Int())
+
+				output = output + template + "\n\n\n"
+			}
+		}
 	}
 
 	return []string{output}
@@ -287,6 +312,15 @@ func ConvertGeminiResponseToClaudeNonStream(_ context.Context, _ string, origina
 
 	inputTokens := root.Get("usageMetadata.promptTokenCount").Int()
 	outputTokens := root.Get("usageMetadata.candidatesTokenCount").Int() + root.Get("usageMetadata.thoughtsTokenCount").Int()
+
+	// Fallback: check alternative paths if tokens are 0 (Gemini 3 may use different paths)
+	if inputTokens == 0 && outputTokens == 0 {
+		if altInputTokens := root.Get("response.usageMetadata.promptTokenCount").Int(); altInputTokens > 0 {
+			inputTokens = altInputTokens
+			outputTokens = root.Get("response.usageMetadata.candidatesTokenCount").Int() + root.Get("response.usageMetadata.thoughtsTokenCount").Int()
+		}
+	}
+
 	out, _ = sjson.Set(out, "usage.input_tokens", inputTokens)
 	out, _ = sjson.Set(out, "usage.output_tokens", outputTokens)
 

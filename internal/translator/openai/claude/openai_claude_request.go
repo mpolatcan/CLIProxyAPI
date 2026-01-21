@@ -284,6 +284,8 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 		switch toolChoice.Get("type").String() {
 		case "auto":
 			out, _ = sjson.Set(out, "tool_choice", "auto")
+		case "none":
+			out, _ = sjson.Set(out, "tool_choice", "none")
 		case "any":
 			out, _ = sjson.Set(out, "tool_choice", "required")
 		case "tool":

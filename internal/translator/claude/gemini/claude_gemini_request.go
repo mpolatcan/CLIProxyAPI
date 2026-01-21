@@ -313,12 +313,24 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 						cleaned := params.Raw
 						cleaned, _ = sjson.Set(cleaned, "additionalProperties", false)
 						cleaned, _ = sjson.Set(cleaned, "$schema", "http://json-schema.org/draft-07/schema#")
+
+						// Explicitly extract and preserve the required array from Gemini parameters
+						if requiredResult := params.Get("required"); requiredResult.Exists() && requiredResult.IsArray() {
+							cleaned, _ = sjson.SetRaw(cleaned, "required", requiredResult.Raw)
+						}
+
 						anthropicTool, _ = sjson.SetRaw(anthropicTool, "input_schema", cleaned)
 					} else if params = funcDecl.Get("parametersJsonSchema"); params.Exists() {
 						// Clean up the parameters schema for Claude Code compatibility
 						cleaned := params.Raw
 						cleaned, _ = sjson.Set(cleaned, "additionalProperties", false)
 						cleaned, _ = sjson.Set(cleaned, "$schema", "http://json-schema.org/draft-07/schema#")
+
+						// Explicitly extract and preserve the required array from Gemini parameters
+						if requiredResult := params.Get("required"); requiredResult.Exists() && requiredResult.IsArray() {
+							cleaned, _ = sjson.SetRaw(cleaned, "required", requiredResult.Raw)
+						}
+
 						anthropicTool, _ = sjson.SetRaw(anthropicTool, "input_schema", cleaned)
 					}
 

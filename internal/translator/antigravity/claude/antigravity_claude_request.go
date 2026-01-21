@@ -252,6 +252,126 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							partJSON, _ = sjson.SetRaw(partJSON, "inlineData", inlineDataJSON)
 							clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
 						}
+					} else if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "server_tool_use" {
+						// Server tool use (web_search, web_fetch) - convert to functionCall
+						toolName := contentResult.Get("name").String()
+						toolInput := contentResult.Get("input").String()
+						if toolName != "" && toolInput != "" {
+							partJSON := `{}`
+							partJSON, _ = sjson.Set(partJSON, "functionCall.name", toolName)
+							partJSON, _ = sjson.SetRaw(partJSON, "functionCall.args", toolInput)
+							clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+						}
+					} else if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "web_search_tool_result" {
+						// Web search tool results - extract content for Antigravity
+						searchContent := contentResult.Get("content")
+						if searchContent.IsArray() {
+							// Extract snippet from first result
+							if firstResult := searchContent.Get("0"); firstResult.Exists() {
+								if title := firstResult.Get("title").String(); title != "" {
+									partJSON := `{}`
+									partJSON, _ = sjson.Set(partJSON, "text", "Web search completed")
+									clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+								}
+							}
+						} else if searchContent.Type == gjson.String {
+							partJSON := `{}`
+							partJSON, _ = sjson.Set(partJSON, "text", searchContent.String())
+							clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+						} else if searchContent.IsObject() {
+							if errorType := searchContent.Get("type").String(); errorType == "web_search_tool_result_error" {
+								partJSON := `{}`
+								partJSON, _ = sjson.Set(partJSON, "text", "[Web search error]")
+								clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+							}
+						}
+					} else if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "web_fetch_tool_result" {
+						// Web fetch tool results - extract content for Antigravity
+						fetchContent := contentResult.Get("content")
+						if docContent := fetchContent.Get("content"); docContent.Exists() {
+							if title := docContent.Get("title").String(); title != "" {
+								partJSON := `{}`
+								partJSON, _ = sjson.Set(partJSON, "text", "Web fetch completed: "+title)
+								clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+							}
+						} else if fetchContent.Type == gjson.String {
+							partJSON := `{}`
+							partJSON, _ = sjson.Set(partJSON, "text", fetchContent.String())
+							clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+						} else if fetchContent.IsObject() {
+							if errorType := fetchContent.Get("type").String(); errorType == "web_fetch_tool_error" {
+								partJSON := `{}`
+								partJSON, _ = sjson.Set(partJSON, "text", "[Web fetch error]")
+								clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+							}
+						}
+					} else if contentTypeResult.Type == gjson.String && (contentTypeResult.String() == "web_search" || contentTypeResult.String() == "web_fetch") {
+						// Legacy web_search/web_fetch content blocks
+						partJSON := `{}`
+						partJSON, _ = sjson.Set(partJSON, "text", "[Web tool]")
+						clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+					} else if contentTypeResult.Type == gjson.String && strings.HasPrefix(contentTypeResult.String(), "computer_use") {
+						// Computer use tool - convert to functionCall
+						toolName := contentResult.Get("action").String()
+						if toolName == "" {
+							toolName = "computer_use"
+						}
+						toolInput := contentResult.Get("input").String()
+						partJSON := `{}`
+						partJSON, _ = sjson.Set(partJSON, "functionCall.name", toolName)
+						if toolInput != "" {
+							partJSON, _ = sjson.SetRaw(partJSON, "functionCall.args", toolInput)
+						}
+						clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+					} else if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "computer_use_result" {
+						// Computer use result - pass through as text or error
+						resultContent := contentResult.Get("content")
+						if resultContent.IsObject() {
+							if errorType := resultContent.Get("type").String(); errorType == "computer_use_error" {
+								partJSON := `{}`
+								partJSON, _ = sjson.Set(partJSON, "text", "[Computer use error]")
+								clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+							}
+						} else if text := resultContent.Get("text").String(); text != "" {
+							partJSON := `{}`
+							partJSON, _ = sjson.Set(partJSON, "text", text)
+							clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+						}
+					} else if contentTypeResult.Type == gjson.String && strings.HasPrefix(contentTypeResult.String(), "text_editor") {
+						// Text editor tool - convert to functionCall
+						toolName := contentResult.Get("action").String()
+						if toolName == "" {
+							toolName = contentResult.Get("name").String()
+						}
+						if toolName == "" {
+							toolName = "text_editor"
+						}
+						toolInput := contentResult.Get("input").String()
+						partJSON := `{}`
+						partJSON, _ = sjson.Set(partJSON, "functionCall.name", toolName)
+						if toolInput != "" {
+							partJSON, _ = sjson.SetRaw(partJSON, "functionCall.args", toolInput)
+						}
+						clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+					} else if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "text_editor_result" {
+						// Text editor result - pass through as text or error
+						resultContent := contentResult.Get("content")
+						if resultContent.IsObject() {
+							if errorType := resultContent.Get("type").String(); errorType == "text_editor_error" {
+								partJSON := `{}`
+								partJSON, _ = sjson.Set(partJSON, "text", "[Text editor error]")
+								clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+							}
+						} else if text := resultContent.Get("text").String(); text != "" {
+							partJSON := `{}`
+							partJSON, _ = sjson.Set(partJSON, "text", text)
+							clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+						}
+					} else if contentTypeResult.Type == gjson.String && (contentTypeResult.String() == "document" || contentTypeResult.String() == "collection") {
+						// Document or collection content blocks
+						partJSON := `{}`
+						partJSON, _ = sjson.Set(partJSON, "text", "[Content]")
+						clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
 					}
 				}
 
@@ -310,6 +430,41 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		toolsResults := toolsResult.Array()
 		for i := 0; i < len(toolsResults); i++ {
 			toolResult := toolsResults[i]
+			toolType := toolResult.Get("type").String()
+
+			// Special handling: map Claude web search tool to function declaration
+			if toolType == "web_search_20250305" || toolType == "web_search" {
+				webSearchTool := `{"name":"web_search","description":"Search the web for information","parameters":{"type":"object","properties":{"query":{"type":"string","description":"The search query"}},"required":["query"]}}`
+				toolsJSON, _ = sjson.SetRaw(toolsJSON, "0.functionDeclarations.-1", webSearchTool)
+				toolDeclCount++
+				continue
+			}
+
+			// Special handling: map Claude web fetch tool to function declaration
+			if toolType == "web_fetch_20250910" || toolType == "web_fetch" {
+				webFetchTool := `{"name":"web_fetch","description":"Fetch the full content of a web page or PDF document","parameters":{"type":"object","properties":{"url":{"type":"string","description":"The URL to fetch content from"}},"required":["url"]}}`
+				toolsJSON, _ = sjson.SetRaw(toolsJSON, "0.functionDeclarations.-1", webFetchTool)
+				toolDeclCount++
+				continue
+			}
+
+			// Computer use tool - client-controlled tool for GUI automation
+			if strings.HasPrefix(toolType, "computer_use") {
+				computerUseTool := `{"name":"computer_use","description":"Control a computer to perform tasks like clicking, typing, and viewing screens","parameters":{"type":"object","properties":{"action":{"type":"string","description":"The action to perform: click, type, keypress, scroll, drag, wait, screenshot"},"x":{"type":"integer","description":"X coordinate for click/drag actions"},"y":{"type":"integer","description":"Y coordinate for click/drag actions"},"text":{"type":"string","description":"Text to type"}},"required":["action"]}}`
+				toolsJSON, _ = sjson.SetRaw(toolsJSON, "0.functionDeclarations.-1", computerUseTool)
+				toolDeclCount++
+				continue
+			}
+
+			// Text editor tool - client-controlled tool for file operations
+			if strings.HasPrefix(toolType, "text_editor") {
+				textEditorTool := `{"name":"text_editor","description":"Edit text in files using various operations","parameters":{"type":"object","properties":{"command":{"type":"string","description":"The edit command: insert, delete, replace, view"},"path":{"type":"string","description":"File path to edit"},"text":{"type":"string","description":"Text to insert or replace with"}},"required":["command","path"]}}`
+				toolsJSON, _ = sjson.SetRaw(toolsJSON, "0.functionDeclarations.-1", textEditorTool)
+				toolDeclCount++
+				continue
+			}
+
+			// Handle regular tools with input_schema
 			inputSchemaResult := toolResult.Get("input_schema")
 			if inputSchemaResult.Exists() && inputSchemaResult.IsObject() {
 				// Sanitize the input schema for Antigravity API compatibility
@@ -369,11 +524,15 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	// Map Anthropic thinking -> Gemini thinkingBudget/include_thoughts when type==enabled
 	if t := gjson.GetBytes(rawJSON, "thinking"); enableThoughtTranslate && t.Exists() && t.IsObject() {
 		if t.Get("type").String() == "enabled" {
+			// Always set includeThoughts when thinking is enabled
+			out, _ = sjson.Set(out, "request.generationConfig.thinkingConfig.includeThoughts", true)
 			if b := t.Get("budget_tokens"); b.Exists() && b.Type == gjson.Number {
 				budget := int(b.Int())
 				out, _ = sjson.Set(out, "request.generationConfig.thinkingConfig.thinkingBudget", budget)
-				out, _ = sjson.Set(out, "request.generationConfig.thinkingConfig.includeThoughts", true)
 			}
+		} else if t.Get("type").String() == "disabled" {
+			// Explicitly disable thinking when type is "disabled"
+			out, _ = sjson.Set(out, "request.generationConfig.thinkingConfig.includeThoughts", false)
 		}
 	}
 	if v := gjson.GetBytes(rawJSON, "temperature"); v.Exists() && v.Type == gjson.Number {
