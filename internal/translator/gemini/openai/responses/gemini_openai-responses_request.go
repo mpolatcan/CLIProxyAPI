@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/common"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/translator"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -247,7 +248,7 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 				modelContent := `{"role":"model","parts":[]}`
 				functionCall := `{"functionCall":{"name":"","args":{}}}`
 				functionCall, _ = sjson.Set(functionCall, "functionCall.name", name)
-				functionCall, _ = sjson.Set(functionCall, "thoughtSignature", geminiResponsesThoughtSignature)
+				functionCall, _ = sjson.Set(functionCall, "thoughtSignature", translator.SkipThoughtSignatureValidator)
 				functionCall, _ = sjson.Set(functionCall, "functionCall.id", item.Get("call_id").String())
 
 				// Parse arguments JSON string and set as args object

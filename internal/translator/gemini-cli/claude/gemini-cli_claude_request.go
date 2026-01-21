@@ -10,11 +10,10 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/common"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/translator"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
-
-const geminiCLIClaudeThoughtSignature = "skip_thought_signature_validator"
 
 // ConvertClaudeRequestToCLI parses and transforms a Claude Code API request into Gemini CLI API format.
 // It extracts the model name, system instruction, message contents, and tool declarations
@@ -95,7 +94,7 @@ func ConvertClaudeRequestToCLI(modelName string, inputRawJSON []byte, _ bool) []
 						argsResult := gjson.Parse(functionArgs)
 						if argsResult.IsObject() && gjson.Valid(functionArgs) {
 							part := `{"thoughtSignature":"","functionCall":{"name":"","args":{}}}`
-							part, _ = sjson.Set(part, "thoughtSignature", geminiCLIClaudeThoughtSignature)
+							part, _ = sjson.Set(part, "thoughtSignature", translator.SkipThoughtSignatureValidator)
 							part, _ = sjson.Set(part, "functionCall.name", functionName)
 							part, _ = sjson.SetRaw(part, "functionCall.args", functionArgs)
 							contentJSON, _ = sjson.SetRaw(contentJSON, "parts.-1", part)

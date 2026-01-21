@@ -12,6 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/common"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/translator"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -186,12 +187,11 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							// Use skip_thought_signature_validator for tool calls without valid thinking signature
 							// This is the approach used in opencode-google-antigravity-auth for Gemini
 							// and also works for Claude through Antigravity API
-							const skipSentinel = "skip_thought_signature_validator"
 							if cache.HasValidSignature(modelName, currentMessageThinkingSignature) {
 								partJSON, _ = sjson.Set(partJSON, "thoughtSignature", currentMessageThinkingSignature)
 							} else {
 								// No valid signature - use skip sentinel to bypass validation
-								partJSON, _ = sjson.Set(partJSON, "thoughtSignature", skipSentinel)
+								partJSON, _ = sjson.Set(partJSON, "thoughtSignature", translator.SkipThoughtSignatureValidator)
 							}
 
 							if functionID != "" {
@@ -310,33 +310,6 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 						partJSON := `{}`
 						partJSON, _ = sjson.Set(partJSON, "text", "[Web tool]")
 						clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
-					} else if contentTypeResult.Type == gjson.String && strings.HasPrefix(contentTypeResult.String(), "computer_use") {
-						// Computer use tool - convert to functionCall
-						toolName := contentResult.Get("action").String()
-						if toolName == "" {
-							toolName = "computer_use"
-						}
-						toolInput := contentResult.Get("input").String()
-						partJSON := `{}`
-						partJSON, _ = sjson.Set(partJSON, "functionCall.name", toolName)
-						if toolInput != "" {
-							partJSON, _ = sjson.SetRaw(partJSON, "functionCall.args", toolInput)
-						}
-						clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
-					} else if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "computer_use_result" {
-						// Computer use result - pass through as text or error
-						resultContent := contentResult.Get("content")
-						if resultContent.IsObject() {
-							if errorType := resultContent.Get("type").String(); errorType == "computer_use_error" {
-								partJSON := `{}`
-								partJSON, _ = sjson.Set(partJSON, "text", "[Computer use error]")
-								clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
-							}
-						} else if text := resultContent.Get("text").String(); text != "" {
-							partJSON := `{}`
-							partJSON, _ = sjson.Set(partJSON, "text", text)
-							clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
-						}
 					} else if contentTypeResult.Type == gjson.String && strings.HasPrefix(contentTypeResult.String(), "text_editor") {
 						// Text editor tool - convert to functionCall
 						toolName := contentResult.Get("action").String()
@@ -434,32 +407,21 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 
 			// Special handling: map Claude web search tool to function declaration
 			if toolType == "web_search_20250305" || toolType == "web_search" {
-				webSearchTool := `{"name":"web_search","description":"Search the web for information","parameters":{"type":"object","properties":{"query":{"type":"string","description":"The search query"}},"required":["query"]}}`
-				toolsJSON, _ = sjson.SetRaw(toolsJSON, "0.functionDeclarations.-1", webSearchTool)
+				toolsJSON, _ = sjson.SetRaw(toolsJSON, "0.functionDeclarations.-1", translator.WebSearchToolDefinition)
 				toolDeclCount++
 				continue
 			}
 
 			// Special handling: map Claude web fetch tool to function declaration
 			if toolType == "web_fetch_20250910" || toolType == "web_fetch" {
-				webFetchTool := `{"name":"web_fetch","description":"Fetch the full content of a web page or PDF document","parameters":{"type":"object","properties":{"url":{"type":"string","description":"The URL to fetch content from"}},"required":["url"]}}`
-				toolsJSON, _ = sjson.SetRaw(toolsJSON, "0.functionDeclarations.-1", webFetchTool)
-				toolDeclCount++
-				continue
-			}
-
-			// Computer use tool - client-controlled tool for GUI automation
-			if strings.HasPrefix(toolType, "computer_use") {
-				computerUseTool := `{"name":"computer_use","description":"Control a computer to perform tasks like clicking, typing, and viewing screens","parameters":{"type":"object","properties":{"action":{"type":"string","description":"The action to perform: click, type, keypress, scroll, drag, wait, screenshot"},"x":{"type":"integer","description":"X coordinate for click/drag actions"},"y":{"type":"integer","description":"Y coordinate for click/drag actions"},"text":{"type":"string","description":"Text to type"}},"required":["action"]}}`
-				toolsJSON, _ = sjson.SetRaw(toolsJSON, "0.functionDeclarations.-1", computerUseTool)
+				toolsJSON, _ = sjson.SetRaw(toolsJSON, "0.functionDeclarations.-1", translator.WebFetchToolDefinition)
 				toolDeclCount++
 				continue
 			}
 
 			// Text editor tool - client-controlled tool for file operations
 			if strings.HasPrefix(toolType, "text_editor") {
-				textEditorTool := `{"name":"text_editor","description":"Edit text in files using various operations","parameters":{"type":"object","properties":{"command":{"type":"string","description":"The edit command: insert, delete, replace, view"},"path":{"type":"string","description":"File path to edit"},"text":{"type":"string","description":"Text to insert or replace with"}},"required":["command","path"]}}`
-				toolsJSON, _ = sjson.SetRaw(toolsJSON, "0.functionDeclarations.-1", textEditorTool)
+				toolsJSON, _ = sjson.SetRaw(toolsJSON, "0.functionDeclarations.-1", translator.TextEditorToolDefinition)
 				toolDeclCount++
 				continue
 			}

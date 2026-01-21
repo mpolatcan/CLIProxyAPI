@@ -10,11 +10,10 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/common"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/translator"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
-
-const geminiClaudeThoughtSignature = "skip_thought_signature_validator"
 
 // ConvertClaudeRequestToGemini parses a Claude API request and returns a complete
 // Gemini CLI request body (as JSON bytes) ready to be sent via SendRawMessageStream.
@@ -88,7 +87,7 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 						argsResult := gjson.Parse(functionArgs)
 						if argsResult.IsObject() && gjson.Valid(functionArgs) {
 							part := `{"thoughtSignature":"","functionCall":{"name":"","args":{}}}`
-							part, _ = sjson.Set(part, "thoughtSignature", geminiClaudeThoughtSignature)
+							part, _ = sjson.Set(part, "thoughtSignature", translator.SkipThoughtSignatureValidator)
 							part, _ = sjson.Set(part, "functionCall.name", functionName)
 							part, _ = sjson.SetRaw(part, "functionCall.args", functionArgs)
 							contentJSON, _ = sjson.SetRaw(contentJSON, "parts.-1", part)
@@ -178,7 +177,7 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 						toolInput := contentResult.Get("input").String()
 						if toolName != "" && toolInput != "" {
 							part := `{"thoughtSignature":"","functionCall":{"name":"","args":{}}}`
-							part, _ = sjson.Set(part, "thoughtSignature", geminiClaudeThoughtSignature)
+							part, _ = sjson.Set(part, "thoughtSignature", translator.SkipThoughtSignatureValidator)
 							part, _ = sjson.Set(part, "functionCall.name", toolName)
 							part, _ = sjson.SetRaw(part, "functionCall.args", toolInput)
 							contentJSON, _ = sjson.SetRaw(contentJSON, "parts.-1", part)
@@ -247,36 +246,6 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 						part := `{"text":"[Web fetch tool]"}`
 						contentJSON, _ = sjson.SetRaw(contentJSON, "parts.-1", part)
 
-					case "computer_use":
-						// Computer use tool - convert to functionCall for Gemini
-						// The client is responsible for implementing the actual computer control
-						toolName := contentResult.Get("action").String()
-						if toolName == "" {
-							toolName = "computer_use"
-						}
-						toolInput := contentResult.Get("input").String()
-						part := `{"thoughtSignature":"","functionCall":{"name":"computer_use","args":{}}}`
-						part, _ = sjson.Set(part, "thoughtSignature", geminiClaudeThoughtSignature)
-						if toolInput != "" {
-							part, _ = sjson.SetRaw(part, "functionCall.args", toolInput)
-						}
-						contentJSON, _ = sjson.SetRaw(contentJSON, "parts.-1", part)
-
-					case "computer_use_result":
-						// Computer use result - pass through as text or error
-						// The actual result is executed by the client
-						resultContent := contentResult.Get("content")
-						if resultContent.IsObject() {
-							if errorType := resultContent.Get("type").String(); errorType == "computer_use_error" {
-								part := `{"text":"[Computer use error]"}`
-								contentJSON, _ = sjson.SetRaw(contentJSON, "parts.-1", part)
-							}
-						} else if text := resultContent.Get("text").String(); text != "" {
-							part := `{"text":""}`
-							part, _ = sjson.Set(part, "text", text)
-							contentJSON, _ = sjson.SetRaw(contentJSON, "parts.-1", part)
-						}
-
 					case "text_editor":
 						// Text editor tool - convert to functionCall for Gemini
 						// The client is responsible for implementing the actual file operations
@@ -289,7 +258,7 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 						}
 						toolInput := contentResult.Get("input").String()
 						part := `{"thoughtSignature":"","functionCall":{"name":"text_editor","args":{}}}`
-						part, _ = sjson.Set(part, "thoughtSignature", geminiClaudeThoughtSignature)
+						part, _ = sjson.Set(part, "thoughtSignature", translator.SkipThoughtSignatureValidator)
 						if toolInput != "" {
 							part, _ = sjson.SetRaw(part, "functionCall.args", toolInput)
 						}
@@ -351,8 +320,7 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 				// Note: search_context_size, max_uses, allowed_domains, blocked_domains, user_location
 				// are server-side parameters for Anthropic, not passed to Gemini
 				// Gemini handles search internally based on the query
-				webSearchTool := `{"name":"web_search","description":"Search the web for information","parameters":{"type":"object","properties":{"query":{"type":"string","description":"The search query"}},"required":["query"]}}`
-				out, _ = sjson.SetRaw(out, "tools.0.functionDeclarations.-1", webSearchTool)
+				out, _ = sjson.SetRaw(out, "tools.0.functionDeclarations.-1", translator.WebSearchToolDefinition)
 				return true
 			}
 
@@ -368,20 +336,7 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 				// Note: max_uses, allowed_domains, blocked_domains, citations, max_content_tokens
 				// are server-side parameters for Anthropic, not passed to Gemini
 				// Gemini handles fetching internally based on the URL
-				webFetchTool := `{"name":"web_fetch","description":"Fetch the full content of a web page or PDF document","parameters":{"type":"object","properties":{"url":{"type":"string","description":"The URL to fetch content from"}},"required":["url"]}}`
-				out, _ = sjson.SetRaw(out, "tools.0.functionDeclarations.-1", webFetchTool)
-				return true
-			}
-
-			// Computer use tool - client-controlled tool for GUI automation
-			// These tools require client implementation, we just pass through the declaration
-			if strings.HasPrefix(toolType, "computer_use") {
-				if !hasTools {
-					out, _ = sjson.SetRaw(out, "tools", `[{"functionDeclarations":[]}]`)
-					hasTools = true
-				}
-				computerUseTool := `{"name":"computer_use","description":"Control a computer to perform tasks like clicking, typing, and viewing screens","parameters":{"type":"object","properties":{"action":{"type":"string","description":"The action to perform: click, type, keypress, scroll, drag, wait, screenshot"},"x":{"type":"integer","description":"X coordinate for click/drag actions"},"y":{"type":"integer","description":"Y coordinate for click/drag actions"},"text":{"type":"string","description":"Text to type"},"scroll_x":{"type":"integer","description":"Horizontal scroll amount"},"scroll_y":{"type":"integer","description":"Vertical scroll amount"}},"required":["action"]}}`
-				out, _ = sjson.SetRaw(out, "tools.0.functionDeclarations.-1", computerUseTool)
+				out, _ = sjson.SetRaw(out, "tools.0.functionDeclarations.-1", translator.WebFetchToolDefinition)
 				return true
 			}
 
@@ -392,8 +347,7 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 					out, _ = sjson.SetRaw(out, "tools", `[{"functionDeclarations":[]}]`)
 					hasTools = true
 				}
-				textEditorTool := `{"name":"text_editor","description":"Edit text in files using various operations","parameters":{"type":"object","properties":{"command":{"type":"string","description":"The edit command: insert, delete, replace, view"},"path":{"type":"string","description":"File path to edit"},"text":{"type":"string","description":"Text to insert or replace with"},"old_text":{"type":"string","description":"Text to replace"},"offset":{"type":"integer","description":"Character offset"},"limit":{"type":"integer","description":"Number of characters to delete"}},"required":["command","path"]}}`
-				out, _ = sjson.SetRaw(out, "tools.0.functionDeclarations.-1", textEditorTool)
+				out, _ = sjson.SetRaw(out, "tools.0.functionDeclarations.-1", translator.GeminiTextEditorToolDefinition)
 				return true
 			}
 
