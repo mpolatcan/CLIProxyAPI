@@ -130,7 +130,8 @@ func GetCachedSignature(modelName, text string) string {
 		return ""
 	}
 	text = fmt.Sprintf("%s#%s", GetModelGroup(modelName), text)
-	val, ok := signatureCache.Load(hashText(text))
+	textHash := hashText(text)
+	val, ok := signatureCache.Load(textHash)
 	if !ok {
 		if family == "gemini" {
 			return translator.SkipThoughtSignatureValidator
@@ -138,8 +139,6 @@ func GetCachedSignature(modelName, text string) string {
 		return ""
 	}
 	sc := val.(*sessionCache)
-
-	textHash := hashText(text)
 
 	now := time.Now()
 

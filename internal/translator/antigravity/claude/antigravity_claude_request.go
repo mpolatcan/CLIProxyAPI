@@ -128,12 +128,14 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 						}
 
 						// Store for subsequent tool_use in the same message
-						if cache.HasValidSignature(modelName, signature) {
+						// Cache validation result to avoid repeated calls
+						signatureValid := cache.HasValidSignature(modelName, signature)
+						if signatureValid {
 							currentMessageThinkingSignature = signature
 						}
 
 						// Skip trailing unsigned thinking blocks on last assistant message
-						isUnsigned := !cache.HasValidSignature(modelName, signature)
+						isUnsigned := !signatureValid
 
 						// If unsigned, skip entirely (don't convert to text)
 						// Claude requires assistant messages to start with thinking blocks when thinking is enabled
