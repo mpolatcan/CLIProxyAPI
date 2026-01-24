@@ -39,6 +39,7 @@ type Params struct {
 	HasSentFinalEvents   bool   // Indicates if final content/message events have been sent
 	HasToolUse           bool   // Indicates if tool use was observed in the stream
 	HasContent           bool   // Tracks whether any content (text, thinking, or tool use) has been output
+	SessionID            string // Session identifier derived from request for signature caching
 
 	// Signature caching support
 	CurrentThinkingText strings.Builder // Accumulates thinking text for signature caching
@@ -65,10 +66,20 @@ var toolUseIDCounter uint64
 //   - []string: A slice of strings, each containing a Claude Code-compatible JSON response
 func ConvertAntigravityResponseToClaude(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) []string {
 	if *param == nil {
+		// Derive SessionID from request or generate a default
+		sessionID := gjson.GetBytes(requestRawJSON, "session_id").String()
+		if sessionID == "" {
+			sessionID = gjson.GetBytes(originalRequestRawJSON, "session_id").String()
+		}
+		if sessionID == "" {
+			sessionID = "default-session"
+		}
+
 		*param = &Params{
 			HasFirstResponse: false,
 			ResponseType:     0,
 			ResponseIndex:    0,
+			SessionID:        sessionID,
 		}
 	}
 	modelName := gjson.GetBytes(requestRawJSON, "model").String()

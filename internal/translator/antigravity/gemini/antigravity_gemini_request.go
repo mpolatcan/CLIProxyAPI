@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/common"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/translator"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -102,8 +103,6 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	// - Add skip_thought_signature_validator to functionCall parts so upstream can bypass signature validation.
 	// - Also mark thinking parts with the same sentinel when present (we keep the parts; we only annotate them).
 	if !strings.Contains(modelName, "claude") {
-		const skipSentinel = "skip_thought_signature_validator"
-
 		gjson.GetBytes(rawJSON, "request.contents").ForEach(func(contentIdx, content gjson.Result) bool {
 			if content.Get("role").String() == "model" {
 				// First pass: collect indices of thinking parts to mark with skip sentinel
@@ -117,7 +116,7 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 					if part.Get("functionCall").Exists() {
 						existingSig := part.Get("thoughtSignature").String()
 						if existingSig == "" || len(existingSig) < 50 {
-							rawJSON, _ = sjson.SetBytes(rawJSON, fmt.Sprintf("request.contents.%d.parts.%d.thoughtSignature", contentIdx.Int(), partIdx.Int()), skipSentinel)
+							rawJSON, _ = sjson.SetBytes(rawJSON, fmt.Sprintf("request.contents.%d.parts.%d.thoughtSignature", contentIdx.Int(), partIdx.Int()), translator.SkipThoughtSignatureValidator)
 						}
 					}
 					return true
@@ -126,7 +125,7 @@ func ConvertGeminiRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 				// Add skip_thought_signature_validator sentinel to thinking blocks in reverse order to preserve indices
 				for i := len(thinkingIndicesToSkipSignature) - 1; i >= 0; i-- {
 					idx := thinkingIndicesToSkipSignature[i]
-					rawJSON, _ = sjson.SetBytes(rawJSON, fmt.Sprintf("request.contents.%d.parts.%d.thoughtSignature", contentIdx.Int(), idx), skipSentinel)
+					rawJSON, _ = sjson.SetBytes(rawJSON, fmt.Sprintf("request.contents.%d.parts.%d.thoughtSignature", contentIdx.Int(), idx), translator.SkipThoughtSignatureValidator)
 				}
 			}
 			return true

@@ -12,6 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/common"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/translator"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -127,12 +128,14 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 						}
 
 						// Store for subsequent tool_use in the same message
-						if cache.HasValidSignature(modelName, signature) {
+						// Cache validation result to avoid repeated calls
+						signatureValid := cache.HasValidSignature(modelName, signature)
+						if signatureValid {
 							currentMessageThinkingSignature = signature
 						}
 
 						// Skip trailing unsigned thinking blocks on last assistant message
-						isUnsigned := !cache.HasValidSignature(modelName, signature)
+						isUnsigned := !signatureValid
 
 						// If unsigned, skip entirely (don't convert to text)
 						// Claude requires assistant messages to start with thinking blocks when thinking is enabled
@@ -186,12 +189,11 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							// Use skip_thought_signature_validator for tool calls without valid thinking signature
 							// This is the approach used in opencode-google-antigravity-auth for Gemini
 							// and also works for Claude through Antigravity API
-							const skipSentinel = "skip_thought_signature_validator"
 							if cache.HasValidSignature(modelName, currentMessageThinkingSignature) {
 								partJSON, _ = sjson.Set(partJSON, "thoughtSignature", currentMessageThinkingSignature)
 							} else {
 								// No valid signature - use skip sentinel to bypass validation
-								partJSON, _ = sjson.Set(partJSON, "thoughtSignature", skipSentinel)
+								partJSON, _ = sjson.Set(partJSON, "thoughtSignature", translator.SkipThoughtSignatureValidator)
 							}
 
 							if functionID != "" {
@@ -252,6 +254,133 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							partJSON, _ = sjson.SetRaw(partJSON, "inlineData", inlineDataJSON)
 							clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
 						}
+					} else if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "server_tool_use" {
+						// Server tool use (web_search, web_fetch) - convert to functionCall
+						toolName := contentResult.Get("name").String()
+						toolInput := contentResult.Get("input").String()
+						if toolName != "" && toolInput != "" {
+							partJSON := `{}`
+							partJSON, _ = sjson.Set(partJSON, "functionCall.name", toolName)
+							partJSON, _ = sjson.SetRaw(partJSON, "functionCall.args", toolInput)
+							clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+						}
+					} else if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "web_search_tool_result" {
+						// Web search tool results - pass through to Gemini as function response
+						// Claude API format:
+						// {
+						//   "type": "web_search_tool_result",
+						//   "tool_use_id": "srvtoolu_xxx",
+						//   "content": [
+						//     { "type": "web_search_result", "url": "...", "title": "...", "encrypted_content": "...", "page_age": "..." }
+						//   ] | {
+						//     "type": "web_search_tool_result_error",
+						//     "error_code": "..."
+						//   }
+						// }
+						toolUseID := contentResult.Get("tool_use_id").String()
+						searchContent := contentResult.Get("content")
+
+						if toolUseID != "" {
+							// Extract function name from tool_use_id (e.g., "web_search-xxx" -> "web_search")
+							funcName := "web_search"
+							if strings.Contains(toolUseID, "-") {
+								parts := strings.SplitN(toolUseID, "-", 2)
+								funcName = parts[0]
+							}
+
+							functionResponseJSON := `{}`
+							functionResponseJSON, _ = sjson.Set(functionResponseJSON, "id", toolUseID)
+							functionResponseJSON, _ = sjson.Set(functionResponseJSON, "name", funcName)
+
+							// Pass through the full content (array of results or error object)
+							if searchContent.Exists() {
+								functionResponseJSON, _ = sjson.SetRaw(functionResponseJSON, "response.result", searchContent.Raw)
+							}
+
+							partJSON := `{}`
+							partJSON, _ = sjson.SetRaw(partJSON, "functionResponse", functionResponseJSON)
+							clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+						}
+					} else if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "web_fetch_tool_result" {
+						// Web fetch tool results - pass through to Gemini as function response
+						// Claude API format:
+						// {
+						//   "type": "web_fetch_tool_result",
+						//   "tool_use_id": "srvtoolu_xxx",
+						//   "content": {
+						//     "type": "web_fetch_result",
+						//     "url": "...",
+						//     "content": { "type": "document", ... },
+						//     "retrieved_at": "..."
+						//   } | {
+						//     "type": "web_fetch_tool_error",
+						//     "error_code": "..."
+						//   }
+						// }
+						toolUseID := contentResult.Get("tool_use_id").String()
+						fetchContent := contentResult.Get("content")
+
+						if toolUseID != "" {
+							// Extract function name from tool_use_id
+							funcName := "web_fetch"
+							if strings.Contains(toolUseID, "-") {
+								parts := strings.SplitN(toolUseID, "-", 2)
+								funcName = parts[0]
+							}
+
+							functionResponseJSON := `{}`
+							functionResponseJSON, _ = sjson.Set(functionResponseJSON, "id", toolUseID)
+							functionResponseJSON, _ = sjson.Set(functionResponseJSON, "name", funcName)
+
+							// Pass through the full content (web_fetch_result or error object)
+							if fetchContent.Exists() {
+								functionResponseJSON, _ = sjson.SetRaw(functionResponseJSON, "response.result", fetchContent.Raw)
+							}
+
+							partJSON := `{}`
+							partJSON, _ = sjson.SetRaw(partJSON, "functionResponse", functionResponseJSON)
+							clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+						}
+					} else if contentTypeResult.Type == gjson.String && (contentTypeResult.String() == "web_search" || contentTypeResult.String() == "web_fetch") {
+						// Legacy web_search/web_fetch content blocks
+						partJSON := `{}`
+						partJSON, _ = sjson.Set(partJSON, "text", "[Web tool]")
+						clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+					} else if contentTypeResult.Type == gjson.String && strings.HasPrefix(contentTypeResult.String(), "text_editor") {
+						// Text editor tool - convert to functionCall
+						toolName := contentResult.Get("action").String()
+						if toolName == "" {
+							toolName = contentResult.Get("name").String()
+						}
+						if toolName == "" {
+							toolName = "text_editor"
+						}
+						toolInput := contentResult.Get("input").String()
+						partJSON := `{}`
+						partJSON, _ = sjson.Set(partJSON, "functionCall.name", toolName)
+						if toolInput != "" {
+							partJSON, _ = sjson.SetRaw(partJSON, "functionCall.args", toolInput)
+						}
+						clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+					} else if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "text_editor_result" {
+						// Text editor result - pass through as text or error
+						resultContent := contentResult.Get("content")
+						if resultContent.IsObject() {
+							if errorType := resultContent.Get("type").String(); errorType == "text_editor_error" {
+								partJSON := `{}`
+								partJSON, _ = sjson.Set(partJSON, "text", "[Text editor error]")
+								clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+							}
+						} else if text := resultContent.Get("text").String(); text != "" {
+							partJSON := `{}`
+							partJSON, _ = sjson.Set(partJSON, "text", text)
+							clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+						}
+					} else if contentTypeResult.Type == gjson.String && (contentTypeResult.String() == "document" || contentTypeResult.String() == "collection") {
+						// Document or collection content blocks
+						partJSON := `{}`
+						partJSON, _ = sjson.Set(partJSON, "text", "[Content]")
+						clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
 					}
 				}
 
@@ -310,6 +439,30 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		toolsResults := toolsResult.Array()
 		for i := 0; i < len(toolsResults); i++ {
 			toolResult := toolsResults[i]
+			toolType := toolResult.Get("type").String()
+
+			// Special handling: map Claude web search tool to function declaration
+			if toolType == "web_search_20250305" || toolType == "web_search" {
+				toolsJSON, _ = sjson.SetRaw(toolsJSON, "0.functionDeclarations.-1", translator.WebSearchToolDefinition)
+				toolDeclCount++
+				continue
+			}
+
+			// Special handling: map Claude web fetch tool to function declaration
+			if toolType == "web_fetch_20250910" || toolType == "web_fetch" {
+				toolsJSON, _ = sjson.SetRaw(toolsJSON, "0.functionDeclarations.-1", translator.WebFetchToolDefinition)
+				toolDeclCount++
+				continue
+			}
+
+			// Text editor tool - client-controlled tool for file operations
+			if strings.HasPrefix(toolType, "text_editor") {
+				toolsJSON, _ = sjson.SetRaw(toolsJSON, "0.functionDeclarations.-1", translator.TextEditorToolDefinition)
+				toolDeclCount++
+				continue
+			}
+
+			// Handle regular tools with input_schema
 			inputSchemaResult := toolResult.Get("input_schema")
 			if inputSchemaResult.Exists() && inputSchemaResult.IsObject() {
 				// Sanitize the input schema for Antigravity API compatibility
@@ -369,11 +522,15 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	// Map Anthropic thinking -> Gemini thinkingBudget/include_thoughts when type==enabled
 	if t := gjson.GetBytes(rawJSON, "thinking"); enableThoughtTranslate && t.Exists() && t.IsObject() {
 		if t.Get("type").String() == "enabled" {
+			// Always set includeThoughts when thinking is enabled
+			out, _ = sjson.Set(out, "request.generationConfig.thinkingConfig.includeThoughts", true)
 			if b := t.Get("budget_tokens"); b.Exists() && b.Type == gjson.Number {
 				budget := int(b.Int())
 				out, _ = sjson.Set(out, "request.generationConfig.thinkingConfig.thinkingBudget", budget)
-				out, _ = sjson.Set(out, "request.generationConfig.thinkingConfig.includeThoughts", true)
 			}
+		} else if t.Get("type").String() == "disabled" {
+			// Explicitly disable thinking when type is "disabled"
+			out, _ = sjson.Set(out, "request.generationConfig.thinkingConfig.includeThoughts", false)
 		}
 	}
 	if v := gjson.GetBytes(rawJSON, "temperature"); v.Exists() && v.Type == gjson.Number {

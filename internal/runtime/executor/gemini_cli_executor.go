@@ -37,6 +37,11 @@ const (
 	codeAssistVersion       = "v1internal"
 	geminiOAuthClientID     = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
 	geminiOAuthClientSecret = "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"
+
+	// Retry settings for 429 rate limit handling
+	geminiRetryBaseDelay    = 1 * time.Second
+	geminiRetryMaxDelay     = 30 * time.Second
+	geminiRetryMaxAttempts  = 4
 )
 
 var geminiOAuthScopes = []string{
@@ -44,6 +49,9 @@ var geminiOAuthScopes = []string{
 	"https://www.googleapis.com/auth/userinfo.email",
 	"https://www.googleapis.com/auth/userinfo.profile",
 }
+
+// GeminiRateLimiter is the global rate limiter for Gemini API requests.
+var GeminiRateLimiter = geminicli.NewRateLimiter(geminicli.DefaultRateLimitConfig())
 
 // GeminiCLIExecutor talks to the Cloud Code Assist endpoint using OAuth credentials from auth metadata.
 type GeminiCLIExecutor struct {
@@ -103,6 +111,31 @@ func (e *GeminiCLIExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.
 
 // Execute performs a non-streaming request to the Gemini CLI API.
 func (e *GeminiCLIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	// Apply rate limiting before making the request
+	accountKey := auth.ID
+	if email := stringValue(auth.Metadata, "email"); email != "" {
+		accountKey = email
+	}
+	accountState := GeminiRateLimiter.GetAccountState(auth.ID, accountKey)
+
+	// Wait for rate limit window
+	acquired, waitTime := accountState.TryAcquire(GeminiRateLimiter.GetConfig())
+	if !acquired {
+		log.Debugf("gemini cli executor: rate limited (client-side), waiting %v for account %s", waitTime, accountKey)
+		select {
+		case <-ctx.Done():
+			return resp, ctx.Err()
+		case <-time.After(waitTime):
+		}
+		// Retry acquire after waiting
+		acquired, _ = accountState.TryAcquire(GeminiRateLimiter.GetConfig())
+		if !acquired {
+			err = statusErr{code: 429, msg: "client-side rate limit exceeded"}
+			return resp, err
+		}
+	}
+	defer accountState.Release()
+
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	tokenSource, baseTokenData, err := prepareGeminiCLITokenSource(ctx, e.cfg, auth)
@@ -227,13 +260,42 @@ func (e *GeminiCLIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 		lastStatus = httpResp.StatusCode
 		lastBody = append([]byte(nil), data...)
 		log.Debugf("request error, error status: %d, error body: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
+
+		// Handle 429 with retry logic
 		if httpResp.StatusCode == 429 {
-			if idx+1 < len(models) {
-				log.Debugf("gemini cli executor: rate limited, retrying with next model: %s", models[idx+1])
-			} else {
-				log.Debug("gemini cli executor: rate limited, no additional fallback model")
+			retryErr := newGeminiStatusErr(httpResp.StatusCode, data)
+			retryDelay := geminiRetryBaseDelay * time.Duration(1<<idx)
+			if retryDelay > geminiRetryMaxDelay {
+				retryDelay = geminiRetryMaxDelay
 			}
-			continue
+			log.Debugf("gemini cli executor: initial retry delay from backoff: %v, parsed retryAfter: %v", retryDelay, retryErr.retryAfter)
+			if retryErr.retryAfter != nil && *retryErr.retryAfter > 0 {
+				retryDelay = *retryErr.retryAfter
+				if retryDelay > geminiRetryMaxDelay {
+					retryDelay = geminiRetryMaxDelay
+				}
+				log.Debugf("gemini cli executor: using parsed retry delay: %v", retryDelay)
+			}
+			if idx+1 < len(models) {
+				log.Debugf("gemini cli executor: rate limited, retrying with next model: %s after %v", models[idx+1], retryDelay)
+			} else if idx < geminiRetryMaxAttempts-1 {
+				log.Debugf("gemini cli executor: rate limited, retrying with same model after %v (attempt %d/%d)", retryDelay, idx+1, geminiRetryMaxAttempts)
+			} else {
+				log.Debug("gemini cli executor: rate limited, max retry attempts reached")
+				// Mark account as quota exceeded in rate limiter
+				GeminiRateLimiter.MarkQuotaExceeded(auth.ID, accountKey)
+				log.Debugf("gemini cli executor: marked account %s as quota exceeded", accountKey)
+			}
+			if idx < geminiRetryMaxAttempts-1 {
+				// Wait before retrying
+				select {
+				case <-ctx.Done():
+					err = ctx.Err()
+					return resp, err
+				case <-time.After(retryDelay):
+				}
+				continue
+			}
 		}
 
 		err = newGeminiStatusErr(httpResp.StatusCode, data)
@@ -252,6 +314,30 @@ func (e *GeminiCLIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 
 // ExecuteStream performs a streaming request to the Gemini CLI API.
 func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (stream <-chan cliproxyexecutor.StreamChunk, err error) {
+	// Apply rate limiting before making the request
+	accountKey := auth.ID
+	if email := stringValue(auth.Metadata, "email"); email != "" {
+		accountKey = email
+	}
+	accountState := GeminiRateLimiter.GetAccountState(auth.ID, accountKey)
+
+	// Wait for rate limit window
+	acquired, waitTime := accountState.TryAcquire(GeminiRateLimiter.GetConfig())
+	if !acquired {
+		log.Debugf("gemini cli executor: rate limited (client-side), waiting %v for account %s", waitTime, accountKey)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(waitTime):
+		}
+		// Retry acquire after waiting
+		acquired, _ = accountState.TryAcquire(GeminiRateLimiter.GetConfig())
+		if !acquired {
+			err = statusErr{code: 429, msg: "client-side rate limit exceeded"}
+			return nil, err
+		}
+	}
+
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	tokenSource, baseTokenData, err := prepareGeminiCLITokenSource(ctx, e.cfg, auth)
@@ -261,6 +347,7 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 
 	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.trackFailure(ctx, &err)
+	defer accountState.Release()
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("gemini-cli")
@@ -359,13 +446,41 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 			lastStatus = httpResp.StatusCode
 			lastBody = append([]byte(nil), data...)
 			log.Debugf("request error, error status: %d, error body: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
+			// Handle 429 with retry logic
 			if httpResp.StatusCode == 429 {
-				if idx+1 < len(models) {
-					log.Debugf("gemini cli executor: rate limited, retrying with next model: %s", models[idx+1])
-				} else {
-					log.Debug("gemini cli executor: rate limited, no additional fallback model")
+				retryErr := newGeminiStatusErr(httpResp.StatusCode, data)
+				retryDelay := geminiRetryBaseDelay * time.Duration(1<<idx)
+				if retryDelay > geminiRetryMaxDelay {
+					retryDelay = geminiRetryMaxDelay
 				}
-				continue
+				log.Debugf("gemini cli executor: initial retry delay from backoff: %v, parsed retryAfter: %v", retryDelay, retryErr.retryAfter)
+				if retryErr.retryAfter != nil && *retryErr.retryAfter > 0 {
+					retryDelay = *retryErr.retryAfter
+					if retryDelay > geminiRetryMaxDelay {
+						retryDelay = geminiRetryMaxDelay
+					}
+					log.Debugf("gemini cli executor: using parsed retry delay: %v", retryDelay)
+				}
+				if idx+1 < len(models) {
+					log.Debugf("gemini cli executor: rate limited, retrying with next model: %s after %v", models[idx+1], retryDelay)
+				} else if idx < geminiRetryMaxAttempts-1 {
+					log.Debugf("gemini cli executor: rate limited, retrying with same model after %v (attempt %d/%d)", retryDelay, idx+1, geminiRetryMaxAttempts)
+				} else {
+					log.Debug("gemini cli executor: rate limited, max retry attempts reached")
+					// Mark account as quota exceeded in rate limiter
+					GeminiRateLimiter.MarkQuotaExceeded(auth.ID, accountKey)
+					log.Debugf("gemini cli executor: marked account %s as quota exceeded", accountKey)
+				}
+				if idx < geminiRetryMaxAttempts-1 {
+					// Wait before retrying
+					select {
+					case <-ctx.Done():
+						err = ctx.Err()
+						return nil, err
+					case <-time.After(retryDelay):
+					}
+					continue
+				}
 			}
 			err = newGeminiStatusErr(httpResp.StatusCode, data)
 			return nil, err
@@ -473,10 +588,12 @@ func (e *GeminiCLIExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.
 
 	var lastStatus int
 	var lastBody []byte
+	attemptIdx := 0
 
 	// The loop variable attemptModel is only used as the concrete model id sent to the upstream
 	// Gemini CLI endpoint when iterating fallback variants.
 	for range models {
+		attemptIdx++
 		payload := sdktranslator.TranslateRequest(from, to, baseModel, bytes.Clone(req.Payload), false)
 
 		payload, err = thinking.ApplyThinking(payload, req.Model, from.String(), to.String(), e.Identifier())
@@ -540,9 +657,30 @@ func (e *GeminiCLIExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.
 		}
 		lastStatus = resp.StatusCode
 		lastBody = append([]byte(nil), data...)
+		// Handle 429 with retry logic
 		if resp.StatusCode == 429 {
-			log.Debugf("gemini cli executor: rate limited, retrying with next model")
-			continue
+			retryErr := newGeminiStatusErr(resp.StatusCode, data)
+			retryDelay := geminiRetryBaseDelay * time.Duration(1<<(attemptIdx-1))
+			if retryDelay > geminiRetryMaxDelay {
+				retryDelay = geminiRetryMaxDelay
+			}
+			if retryErr.retryAfter != nil && *retryErr.retryAfter > 0 {
+				retryDelay = *retryErr.retryAfter
+				if retryDelay > geminiRetryMaxDelay {
+					retryDelay = geminiRetryMaxDelay
+				}
+			}
+			if attemptIdx < geminiRetryMaxAttempts {
+				log.Debugf("gemini cli executor: count tokens rate limited, retrying after %v (attempt %d/%d)", retryDelay, attemptIdx, geminiRetryMaxAttempts)
+				// Wait before retrying
+				select {
+				case <-ctx.Done():
+					return cliproxyexecutor.Response{}, ctx.Err()
+				case <-time.After(retryDelay):
+				}
+				continue
+			}
+			log.Debug("gemini cli executor: count tokens rate limited, max retry attempts reached")
 		}
 		break
 	}
