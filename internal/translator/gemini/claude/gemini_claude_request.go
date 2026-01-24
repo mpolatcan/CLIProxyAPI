@@ -184,56 +184,76 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 						}
 
 					case "web_search_tool_result":
-						// Web search tool results - extract content for Gemini
-						// The actual search results are already executed by Anthropic's server
-						// We pass a summary through to Gemini
-						_ = contentResult.Get("tool_use_id").String() // toolUseID not needed for Gemini
+						// Web search tool results - pass through to Gemini as function response
+						// Claude API format:
+						// {
+						//   "type": "web_search_tool_result",
+						//   "tool_use_id": "srvtoolu_xxx",
+						//   "content": [
+						//     { "type": "web_search_result", "url": "...", "title": "...", "encrypted_content": "...", "page_age": "..." }
+						//   ] | {
+						//     "type": "web_search_tool_result_error",
+						//     "error_code": "..."
+						//   }
+						// }
+						toolUseID := contentResult.Get("tool_use_id").String()
 						searchContent := contentResult.Get("content")
-						if searchContent.IsArray() {
-							// Extract snippet from first result
-							if firstResult := searchContent.Get("0"); firstResult.Exists() {
-								if title := firstResult.Get("title").String(); title != "" {
-									part := `{"text":"[Web search results for: "}`
-									part, _ = sjson.Set(part, "text", "Web search completed")
-									contentJSON, _ = sjson.SetRaw(contentJSON, "parts.-1", part)
-								}
+
+						if toolUseID != "" {
+							// Extract function name from tool_use_id
+							funcName := "web_search"
+							if strings.Contains(toolUseID, "-") {
+								parts := strings.SplitN(toolUseID, "-", 2)
+								funcName = parts[0]
 							}
-						} else if searchContent.Type == gjson.String {
-							// Plain text result
-							part := `{"text":""}`
-							part, _ = sjson.Set(part, "text", searchContent.String())
+
+							part := `{"functionResponse":{"name":"","response":{"result":""}}}`
+							part, _ = sjson.Set(part, "functionResponse.name", funcName)
+							part, _ = sjson.Set(part, "functionResponse.id", toolUseID)
+
+							// Pass through the full content (array of results or error object)
+							if searchContent.Exists() {
+								part, _ = sjson.SetRaw(part, "functionResponse.response.result", searchContent.Raw)
+							}
 							contentJSON, _ = sjson.SetRaw(contentJSON, "parts.-1", part)
-						} else if searchContent.IsObject() {
-							// Error or structured result
-							if errorType := searchContent.Get("type").String(); errorType == "web_search_tool_result_error" {
-								part := `{"text":"[Web search error]"}`
-								contentJSON, _ = sjson.SetRaw(contentJSON, "parts.-1", part)
-							}
 						}
 
 					case "web_fetch_tool_result":
-						// Web fetch tool results - extract content for Gemini
-						// The actual fetch is executed by Anthropic's server
-						_ = contentResult.Get("tool_use_id").String() // toolUseID not needed for Gemini
+						// Web fetch tool results - pass through to Gemini as function response
+						// Claude API format:
+						// {
+						//   "type": "web_fetch_tool_result",
+						//   "tool_use_id": "srvtoolu_xxx",
+						//   "content": {
+						//     "type": "web_fetch_result",
+						//     "url": "...",
+						//     "content": { "type": "document", ... },
+						//     "retrieved_at": "..."
+						//   } | {
+						//     "type": "web_fetch_tool_error",
+						//     "error_code": "..."
+						//   }
+						// }
+						toolUseID := contentResult.Get("tool_use_id").String()
 						fetchContent := contentResult.Get("content")
-						if docContent := fetchContent.Get("content"); docContent.Exists() {
-							// Extract title or summary
-							if title := docContent.Get("title").String(); title != "" {
-								part := `{"text":""}`
-								part, _ = sjson.Set(part, "text", "Web fetch completed: "+title)
-								contentJSON, _ = sjson.SetRaw(contentJSON, "parts.-1", part)
+
+						if toolUseID != "" {
+							// Extract function name from tool_use_id
+							funcName := "web_fetch"
+							if strings.Contains(toolUseID, "-") {
+								parts := strings.SplitN(toolUseID, "-", 2)
+								funcName = parts[0]
 							}
-						} else if fetchContent.Type == gjson.String {
-							// Plain text result
-							part := `{"text":""}`
-							part, _ = sjson.Set(part, "text", fetchContent.String())
+
+							part := `{"functionResponse":{"name":"","response":{"result":""}}}`
+							part, _ = sjson.Set(part, "functionResponse.name", funcName)
+							part, _ = sjson.Set(part, "functionResponse.id", toolUseID)
+
+							// Pass through the full content (web_fetch_result or error object)
+							if fetchContent.Exists() {
+								part, _ = sjson.SetRaw(part, "functionResponse.response.result", fetchContent.Raw)
+							}
 							contentJSON, _ = sjson.SetRaw(contentJSON, "parts.-1", part)
-						} else if fetchContent.IsObject() {
-							// Error or structured result
-							if errorType := fetchContent.Get("type").String(); errorType == "web_fetch_tool_error" {
-								part := `{"text":"[Web fetch error]"}`
-								contentJSON, _ = sjson.SetRaw(contentJSON, "parts.-1", part)
-							}
 						}
 
 					case "web_search":
@@ -304,6 +324,12 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 	}
 
 	// tools
+	// Gemini API expects format:
+	// {
+	//   "tools": [
+	//     { "type": "function", "name": "...", "description": "...", "parameters": {...} }
+	//   ]
+	// }
 	if toolsResult := gjson.GetBytes(rawJSON, "tools"); toolsResult.IsArray() {
 		hasTools := false
 		toolsResult.ForEach(func(_, toolResult gjson.Result) bool {
@@ -314,13 +340,13 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 			// Handle both versioned (web_search_20250305) and unversioned (web_search) types for backward compatibility
 			if toolType == "web_search_20250305" || toolType == "web_search" {
 				if !hasTools {
-					out, _ = sjson.SetRaw(out, "tools", `[{"functionDeclarations":[]}]`)
+					out, _ = sjson.SetRaw(out, "tools", `[]`)
 					hasTools = true
 				}
 				// Note: search_context_size, max_uses, allowed_domains, blocked_domains, user_location
 				// are server-side parameters for Anthropic, not passed to Gemini
 				// Gemini handles search internally based on the query
-				out, _ = sjson.SetRaw(out, "tools.0.functionDeclarations.-1", translator.WebSearchToolDefinition)
+				out, _ = sjson.SetRaw(out, "tools.-1", translator.WebSearchToolDefinition)
 				return true
 			}
 
@@ -330,13 +356,13 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 			// Handle both versioned (web_fetch_20250910) and unversioned (web_fetch) types for backward compatibility
 			if toolType == "web_fetch_20250910" || toolType == "web_fetch" {
 				if !hasTools {
-					out, _ = sjson.SetRaw(out, "tools", `[{"functionDeclarations":[]}]`)
+					out, _ = sjson.SetRaw(out, "tools", `[]`)
 					hasTools = true
 				}
 				// Note: max_uses, allowed_domains, blocked_domains, citations, max_content_tokens
 				// are server-side parameters for Anthropic, not passed to Gemini
 				// Gemini handles fetching internally based on the URL
-				out, _ = sjson.SetRaw(out, "tools.0.functionDeclarations.-1", translator.WebFetchToolDefinition)
+				out, _ = sjson.SetRaw(out, "tools.-1", translator.WebFetchToolDefinition)
 				return true
 			}
 
@@ -344,28 +370,31 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 			// These tools require client implementation, we just pass through the declaration
 			if strings.HasPrefix(toolType, "text_editor") {
 				if !hasTools {
-					out, _ = sjson.SetRaw(out, "tools", `[{"functionDeclarations":[]}]`)
+					out, _ = sjson.SetRaw(out, "tools", `[]`)
 					hasTools = true
 				}
-				out, _ = sjson.SetRaw(out, "tools.0.functionDeclarations.-1", translator.GeminiTextEditorToolDefinition)
+				out, _ = sjson.SetRaw(out, "tools.-1", translator.GeminiTextEditorToolDefinition)
 				return true
 			}
 
 			inputSchemaResult := toolResult.Get("input_schema")
 			if inputSchemaResult.Exists() && inputSchemaResult.IsObject() {
 				inputSchema := inputSchemaResult.Raw
-				tool, _ := sjson.Delete(toolResult.Raw, "input_schema")
-				tool, _ = sjson.SetRaw(tool, "parametersJsonSchema", inputSchema)
-				tool, _ = sjson.Delete(tool, "strict")
-				tool, _ = sjson.Delete(tool, "input_examples")
-				tool, _ = sjson.Delete(tool, "type")
-				tool, _ = sjson.Delete(tool, "cache_control")
+				// Build Gemini-compatible function declaration with "type": "function" and "parameters"
+				tool := `{"type":"function"}`
+				tool, _ = sjson.SetRaw(tool, "parameters", inputSchema)
+				if name := toolResult.Get("name").String(); name != "" {
+					tool, _ = sjson.Set(tool, "name", name)
+				}
+				if description := toolResult.Get("description").String(); description != "" {
+					tool, _ = sjson.Set(tool, "description", description)
+				}
 				if gjson.Valid(tool) && gjson.Parse(tool).IsObject() {
 					if !hasTools {
-						out, _ = sjson.SetRaw(out, "tools", `[{"functionDeclarations":[]}]`)
+						out, _ = sjson.SetRaw(out, "tools", `[]`)
 						hasTools = true
 					}
-					out, _ = sjson.SetRaw(out, "tools.0.functionDeclarations.-1", tool)
+					out, _ = sjson.SetRaw(out, "tools.-1", tool)
 				}
 			}
 			return true

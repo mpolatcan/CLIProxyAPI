@@ -232,6 +232,42 @@ func ConvertGeminiResponseToClaude(_ context.Context, _ string, originalRequestR
 				}
 				(*param).(*Params).ResponseType = 3
 				(*param).(*Params).HasContent = true
+			} else if functionResponseResult := partResult.Get("functionResponse"); functionResponseResult.Exists() {
+				// Handle function responses from tool execution
+				// This processes the results of tool calls that were executed by the client
+				funcResponseContent := functionResponseResult.Get("response.result")
+
+				// Close any existing content block before adding tool result
+				if (*param).(*Params).ResponseType != 0 {
+					output = output + "event: content_block_stop\n"
+					output = output + fmt.Sprintf(`data: {"type":"content_block_stop","index":%d}`, (*param).(*Params).ResponseIndex)
+					output = output + "\n\n\n"
+					(*param).(*Params).ResponseIndex++
+				}
+
+				// Start a new tool result content block
+				output = output + "event: content_block_start\n"
+				data := fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"tool_result","tool_use_id":"","content":""}}`, (*param).(*Params).ResponseIndex)
+
+				// Generate a tool use ID based on the function name
+				toolUseID := fmt.Sprintf("tool_%d", time.Now().UnixNano())
+				data, _ = sjson.Set(data, "content_block.tool_use_id", toolUseID)
+
+				// Set the content - try to parse the result as JSON or use as string
+				if funcResponseContent.Exists() {
+					resultRaw := funcResponseContent.Raw
+					if gjson.Valid(resultRaw) {
+						// It's JSON, try to format it nicely
+						data, _ = sjson.SetRaw(data, "content_block.content", resultRaw)
+					} else {
+						// It's plain text
+						data, _ = sjson.Set(data, "content_block.content", funcResponseContent.String())
+					}
+				}
+
+				output = output + fmt.Sprintf("data: %s\n\n\n", data)
+				(*param).(*Params).ResponseType = 0 // Reset to no active block
+				(*param).(*Params).HasContent = true
 			}
 		}
 	}
@@ -379,6 +415,28 @@ func ConvertGeminiResponseToClaudeNonStream(_ context.Context, _ string, origina
 				}
 				toolBlock, _ = sjson.SetRaw(toolBlock, "input", inputRaw)
 				out, _ = sjson.SetRaw(out, "content.-1", toolBlock)
+				continue
+			}
+
+			if functionResponse := part.Get("functionResponse"); functionResponse.Exists() {
+				flushThinking()
+				flushText()
+
+				funcResult := functionResponse.Get("response.result")
+
+				toolIDCounter++
+				toolResultBlock := `{"type":"tool_result","tool_use_id":"","content":""}`
+				toolResultBlock, _ = sjson.Set(toolResultBlock, "tool_use_id", fmt.Sprintf("tool_%d", toolIDCounter))
+
+				if funcResult.Exists() {
+					resultRaw := funcResult.Raw
+					if gjson.Valid(resultRaw) {
+						toolResultBlock, _ = sjson.SetRaw(toolResultBlock, "content", resultRaw)
+					} else {
+						toolResultBlock, _ = sjson.Set(toolResultBlock, "content", funcResult.String())
+					}
+				}
+				out, _ = sjson.SetRaw(out, "content.-1", toolResultBlock)
 				continue
 			}
 		}
