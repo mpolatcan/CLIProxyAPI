@@ -694,3 +694,216 @@ func TestConvertClaudeRequestToAntigravity_ToolAndThinking_NoExistingSystem(t *t
 		t.Errorf("Interleaved thinking hint should be in created systemInstruction, got: %v", sysInstruction.Raw)
 	}
 }
+
+// ============================================================================
+// Web Search and Web Fetch Tool Results
+// ============================================================================
+
+func TestConvertClaudeRequestToAntigravity_WebSearchToolResult(t *testing.T) {
+	// Test that web_search_tool_result is properly converted to functionResponse
+	inputJSON := []byte(`{
+		"model": "claude-sonnet-4-5",
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{
+						"type": "web_search_tool_result",
+						"tool_use_id": "web_search-abc123",
+						"content": [
+							{
+								"type": "web_search_result",
+								"url": "https://en.wikipedia.org/wiki/Claude_Shannon",
+								"title": "Claude Shannon - Wikipedia",
+								"encrypted_content": "EqgfCioIARgBIiQ3YTAwMjY1Mi1mZjM5LTQ1NGUtODgxNC1kNjNjNTk1ZWI3Y...",
+								"page_age": "April 30, 2025"
+							}
+						]
+					}
+				]
+			}
+		]
+	}`)
+
+	output := ConvertClaudeRequestToAntigravity("claude-sonnet-4-5", inputJSON, false)
+	outputStr := string(output)
+
+	// Check function response conversion
+	funcResp := gjson.Get(outputStr, "request.contents.0.parts.0.functionResponse")
+	if !funcResp.Exists() {
+		t.Fatal("functionResponse should exist for web_search_tool_result")
+	}
+
+	// Check ID is preserved
+	if funcResp.Get("id").String() != "web_search-abc123" {
+		t.Errorf("Expected id 'web_search-abc123', got '%s'", funcResp.Get("id").String())
+	}
+
+	// Check name is extracted from tool_use_id
+	if funcResp.Get("name").String() != "web_search" {
+		t.Errorf("Expected name 'web_search', got '%s'", funcResp.Get("name").String())
+	}
+
+	// Check full content is preserved (not just title)
+	resultContent := funcResp.Get("response.result")
+	if !resultContent.IsArray() {
+		t.Fatal("response.result should be an array")
+	}
+
+	firstResult := resultContent.Get("0")
+	if firstResult.Get("url").String() != "https://en.wikipedia.org/wiki/Claude_Shannon" {
+		t.Errorf("URL should be preserved, got: %s", firstResult.Get("url").String())
+	}
+	if firstResult.Get("title").String() != "Claude Shannon - Wikipedia" {
+		t.Errorf("Title should be preserved, got: %s", firstResult.Get("title").String())
+	}
+	if firstResult.Get("encrypted_content").String() == "" {
+		t.Error("encrypted_content should be preserved")
+	}
+}
+
+func TestConvertClaudeRequestToAntigravity_WebSearchToolResultError(t *testing.T) {
+	// Test that web_search_tool_result errors are properly converted
+	inputJSON := []byte(`{
+		"model": "claude-sonnet-4-5",
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{
+						"type": "web_search_tool_result",
+						"tool_use_id": "web_search-xyz789",
+						"content": {
+							"type": "web_search_tool_result_error",
+							"error_code": "max_uses_exceeded"
+						}
+					}
+				]
+			}
+		]
+	}`)
+
+	output := ConvertClaudeRequestToAntigravity("claude-sonnet-4-5", inputJSON, false)
+	outputStr := string(output)
+
+	// Check function response conversion
+	funcResp := gjson.Get(outputStr, "request.contents.0.parts.0.functionResponse")
+	if !funcResp.Exists() {
+		t.Fatal("functionResponse should exist for web_search_tool_result error")
+	}
+
+	// Check error content is preserved
+	resultContent := funcResp.Get("response.result")
+	if resultContent.Get("type").String() != "web_search_tool_result_error" {
+		t.Errorf("Error type should be preserved, got: %s", resultContent.Get("type").String())
+	}
+	if resultContent.Get("error_code").String() != "max_uses_exceeded" {
+		t.Errorf("Error code should be preserved, got: %s", resultContent.Get("error_code").String())
+	}
+}
+
+func TestConvertClaudeRequestToAntigravity_WebFetchToolResult(t *testing.T) {
+	// Test that web_fetch_tool_result is properly converted to functionResponse
+	inputJSON := []byte(`{
+		"model": "claude-sonnet-4-5",
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{
+						"type": "web_fetch_tool_result",
+						"tool_use_id": "web_fetch-def456",
+						"content": {
+							"type": "web_fetch_result",
+							"url": "https://example.com/article",
+							"content": {
+								"type": "document",
+								"source": {
+									"type": "text",
+									"media_type": "text/plain",
+									"data": "Full article content here..."
+								},
+								"title": "Article Title"
+							},
+							"retrieved_at": "2025-08-25T10:30:00Z"
+						}
+					}
+				]
+			}
+		]
+	}`)
+
+	output := ConvertClaudeRequestToAntigravity("claude-sonnet-4-5", inputJSON, false)
+	outputStr := string(output)
+
+	// Check function response conversion
+	funcResp := gjson.Get(outputStr, "request.contents.0.parts.0.functionResponse")
+	if !funcResp.Exists() {
+		t.Fatal("functionResponse should exist for web_fetch_tool_result")
+	}
+
+	// Check ID is preserved
+	if funcResp.Get("id").String() != "web_fetch-def456" {
+		t.Errorf("Expected id 'web_fetch-def456', got '%s'", funcResp.Get("id").String())
+	}
+
+	// Check name is extracted from tool_use_id
+	if funcResp.Get("name").String() != "web_fetch" {
+		t.Errorf("Expected name 'web_fetch', got '%s'", funcResp.Get("name").String())
+	}
+
+	// Check full content is preserved
+	resultContent := funcResp.Get("response.result")
+	if resultContent.Get("type").String() != "web_fetch_result" {
+		t.Errorf("Result type should be web_fetch_result, got: %s", resultContent.Get("type").String())
+	}
+	if resultContent.Get("url").String() != "https://example.com/article" {
+		t.Errorf("URL should be preserved, got: %s", resultContent.Get("url").String())
+	}
+	if resultContent.Get("content.title").String() != "Article Title" {
+		t.Errorf("Title should be preserved, got: %s", resultContent.Get("content.title").String())
+	}
+	if resultContent.Get("content.source.data").String() != "Full article content here..." {
+		t.Error("Document content should be preserved")
+	}
+}
+
+func TestConvertClaudeRequestToAntigravity_WebFetchToolResultError(t *testing.T) {
+	// Test that web_fetch_tool_result errors are properly converted
+	inputJSON := []byte(`{
+		"model": "claude-sonnet-4-5",
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{
+						"type": "web_fetch_tool_result",
+						"tool_use_id": "web_fetch-ghi789",
+						"content": {
+							"type": "web_fetch_tool_error",
+							"error_code": "url_not_accessible"
+						}
+					}
+				]
+			}
+		]
+	}`)
+
+	output := ConvertClaudeRequestToAntigravity("claude-sonnet-4-5", inputJSON, false)
+	outputStr := string(output)
+
+	// Check function response conversion
+	funcResp := gjson.Get(outputStr, "request.contents.0.parts.0.functionResponse")
+	if !funcResp.Exists() {
+		t.Fatal("functionResponse should exist for web_fetch_tool_result error")
+	}
+
+	// Check error content is preserved
+	resultContent := funcResp.Get("response.result")
+	if resultContent.Get("type").String() != "web_fetch_tool_error" {
+		t.Errorf("Error type should be preserved, got: %s", resultContent.Get("type").String())
+	}
+	if resultContent.Get("error_code").String() != "url_not_accessible" {
+		t.Errorf("Error code should be preserved, got: %s", resultContent.Get("error_code").String())
+	}
+}

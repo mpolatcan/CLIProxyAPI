@@ -265,47 +265,81 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
 						}
 					} else if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "web_search_tool_result" {
-						// Web search tool results - extract content for Antigravity
+						// Web search tool results - pass through to Gemini as function response
+						// Claude API format:
+						// {
+						//   "type": "web_search_tool_result",
+						//   "tool_use_id": "srvtoolu_xxx",
+						//   "content": [
+						//     { "type": "web_search_result", "url": "...", "title": "...", "encrypted_content": "...", "page_age": "..." }
+						//   ] | {
+						//     "type": "web_search_tool_result_error",
+						//     "error_code": "..."
+						//   }
+						// }
+						toolUseID := contentResult.Get("tool_use_id").String()
 						searchContent := contentResult.Get("content")
-						if searchContent.IsArray() {
-							// Extract snippet from first result
-							if firstResult := searchContent.Get("0"); firstResult.Exists() {
-								if title := firstResult.Get("title").String(); title != "" {
-									partJSON := `{}`
-									partJSON, _ = sjson.Set(partJSON, "text", "Web search completed")
-									clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
-								}
+
+						if toolUseID != "" {
+							// Extract function name from tool_use_id (e.g., "web_search-xxx" -> "web_search")
+							funcName := "web_search"
+							if strings.Contains(toolUseID, "-") {
+								parts := strings.SplitN(toolUseID, "-", 2)
+								funcName = parts[0]
 							}
-						} else if searchContent.Type == gjson.String {
+
+							functionResponseJSON := `{}`
+							functionResponseJSON, _ = sjson.Set(functionResponseJSON, "id", toolUseID)
+							functionResponseJSON, _ = sjson.Set(functionResponseJSON, "name", funcName)
+
+							// Pass through the full content (array of results or error object)
+							if searchContent.Exists() {
+								functionResponseJSON, _ = sjson.SetRaw(functionResponseJSON, "response.result", searchContent.Raw)
+							}
+
 							partJSON := `{}`
-							partJSON, _ = sjson.Set(partJSON, "text", searchContent.String())
+							partJSON, _ = sjson.SetRaw(partJSON, "functionResponse", functionResponseJSON)
 							clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
-						} else if searchContent.IsObject() {
-							if errorType := searchContent.Get("type").String(); errorType == "web_search_tool_result_error" {
-								partJSON := `{}`
-								partJSON, _ = sjson.Set(partJSON, "text", "[Web search error]")
-								clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
-							}
 						}
 					} else if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "web_fetch_tool_result" {
-						// Web fetch tool results - extract content for Antigravity
+						// Web fetch tool results - pass through to Gemini as function response
+						// Claude API format:
+						// {
+						//   "type": "web_fetch_tool_result",
+						//   "tool_use_id": "srvtoolu_xxx",
+						//   "content": {
+						//     "type": "web_fetch_result",
+						//     "url": "...",
+						//     "content": { "type": "document", ... },
+						//     "retrieved_at": "..."
+						//   } | {
+						//     "type": "web_fetch_tool_error",
+						//     "error_code": "..."
+						//   }
+						// }
+						toolUseID := contentResult.Get("tool_use_id").String()
 						fetchContent := contentResult.Get("content")
-						if docContent := fetchContent.Get("content"); docContent.Exists() {
-							if title := docContent.Get("title").String(); title != "" {
-								partJSON := `{}`
-								partJSON, _ = sjson.Set(partJSON, "text", "Web fetch completed: "+title)
-								clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
+
+						if toolUseID != "" {
+							// Extract function name from tool_use_id
+							funcName := "web_fetch"
+							if strings.Contains(toolUseID, "-") {
+								parts := strings.SplitN(toolUseID, "-", 2)
+								funcName = parts[0]
 							}
-						} else if fetchContent.Type == gjson.String {
+
+							functionResponseJSON := `{}`
+							functionResponseJSON, _ = sjson.Set(functionResponseJSON, "id", toolUseID)
+							functionResponseJSON, _ = sjson.Set(functionResponseJSON, "name", funcName)
+
+							// Pass through the full content (web_fetch_result or error object)
+							if fetchContent.Exists() {
+								functionResponseJSON, _ = sjson.SetRaw(functionResponseJSON, "response.result", fetchContent.Raw)
+							}
+
 							partJSON := `{}`
-							partJSON, _ = sjson.Set(partJSON, "text", fetchContent.String())
+							partJSON, _ = sjson.SetRaw(partJSON, "functionResponse", functionResponseJSON)
 							clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
-						} else if fetchContent.IsObject() {
-							if errorType := fetchContent.Get("type").String(); errorType == "web_fetch_tool_error" {
-								partJSON := `{}`
-								partJSON, _ = sjson.Set(partJSON, "text", "[Web fetch error]")
-								clientContentJSON, _ = sjson.SetRaw(clientContentJSON, "parts.-1", partJSON)
-							}
 						}
 					} else if contentTypeResult.Type == gjson.String && (contentTypeResult.String() == "web_search" || contentTypeResult.String() == "web_fetch") {
 						// Legacy web_search/web_fetch content blocks
