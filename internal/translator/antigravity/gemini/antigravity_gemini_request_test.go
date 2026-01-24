@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/translator"
 	"github.com/tidwall/gjson"
 )
 
@@ -54,9 +55,9 @@ func TestConvertGeminiRequestToAntigravity_AddSkipSentinelToFunctionCall(t *test
 	output := ConvertGeminiRequestToAntigravity("gemini-3-pro-preview", inputJSON, false)
 	outputStr := string(output)
 
-	// Check that skip_thought_signature_validator is added to functionCall
+	// Check that skip sentinel is added to functionCall
 	sig := gjson.Get(outputStr, "request.contents.0.parts.0.thoughtSignature").String()
-	expectedSig := "skip_thought_signature_validator"
+	expectedSig := translator.SkipThoughtSignatureValidator
 	if sig != expectedSig {
 		t.Errorf("Expected skip sentinel '%s', got '%s'", expectedSig, sig)
 	}
@@ -92,7 +93,7 @@ func TestConvertGeminiRequestToAntigravity_RemoveThinkingBlocks(t *testing.T) {
 	if !parts[0].Get("thought").Bool() {
 		t.Error("First part should be thinking block")
 	}
-	expectedSig := "skip_thought_signature_validator"
+	expectedSig := translator.SkipThoughtSignatureValidator
 	if sig := parts[0].Get("thoughtSignature").String(); sig != expectedSig {
 		t.Errorf("Expected thoughtSignature '%s', got '%s'", expectedSig, sig)
 	}
@@ -132,7 +133,7 @@ func TestConvertGeminiRequestToAntigravity_ParallelFunctionCalls(t *testing.T) {
 		t.Fatalf("Expected 2 parts, got %d", len(parts))
 	}
 
-	expectedSig := "skip_thought_signature_validator"
+	expectedSig := translator.SkipThoughtSignatureValidator
 	for i, part := range parts {
 		sig := part.Get("thoughtSignature").String()
 		if sig != expectedSig {

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/translator"
 )
 
 // SignatureEntry holds a cached thinking signature with timestamp
@@ -123,7 +125,7 @@ func GetCachedSignature(modelName, text string) string {
 
 	if text == "" {
 		if family == "gemini" {
-			return "skip_thought_signature_validator"
+			return translator.SkipThoughtSignatureValidator
 		}
 		return ""
 	}
@@ -131,7 +133,7 @@ func GetCachedSignature(modelName, text string) string {
 	val, ok := signatureCache.Load(hashText(text))
 	if !ok {
 		if family == "gemini" {
-			return "skip_thought_signature_validator"
+			return translator.SkipThoughtSignatureValidator
 		}
 		return ""
 	}
@@ -146,7 +148,7 @@ func GetCachedSignature(modelName, text string) string {
 	if !exists {
 		sc.mu.Unlock()
 		if family == "gemini" {
-			return "skip_thought_signature_validator"
+			return translator.SkipThoughtSignatureValidator
 		}
 		return ""
 	}
@@ -154,7 +156,7 @@ func GetCachedSignature(modelName, text string) string {
 		delete(sc.entries, textHash)
 		sc.mu.Unlock()
 		if family == "gemini" {
-			return "skip_thought_signature_validator"
+			return translator.SkipThoughtSignatureValidator
 		}
 		return ""
 	}
@@ -187,7 +189,7 @@ func ClearSignatureCache(sessionID string) {
 
 // HasValidSignature checks if a signature is valid (non-empty and long enough)
 func HasValidSignature(modelName, signature string) bool {
-	return (signature != "" && len(signature) >= MinValidSignatureLen) || (signature == "skip_thought_signature_validator" && GetModelGroup(modelName) == "gemini")
+	return (signature != "" && len(signature) >= MinValidSignatureLen) || (signature == translator.SkipThoughtSignatureValidator && GetModelGroup(modelName) == "gemini")
 }
 
 func GetModelGroup(modelName string) string {

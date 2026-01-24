@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/gemini/common"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/translator"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -81,9 +82,9 @@ func ConvertGeminiRequestToGemini(_ string, inputRawJSON []byte, _ bool) []byte 
 		if content.Get("role").String() == "model" {
 			content.Get("parts").ForEach(func(partKey, part gjson.Result) bool {
 				if part.Get("functionCall").Exists() {
-					out, _ = sjson.SetBytes(out, fmt.Sprintf("contents.%d.parts.%d.thoughtSignature", key.Int(), partKey.Int()), "skip_thought_signature_validator")
+					out, _ = sjson.SetBytes(out, fmt.Sprintf("contents.%d.parts.%d.thoughtSignature", key.Int(), partKey.Int()), translator.SkipThoughtSignatureValidator)
 				} else if part.Get("thoughtSignature").Exists() {
-					out, _ = sjson.SetBytes(out, fmt.Sprintf("contents.%d.parts.%d.thoughtSignature", key.Int(), partKey.Int()), "skip_thought_signature_validator")
+					out, _ = sjson.SetBytes(out, fmt.Sprintf("contents.%d.parts.%d.thoughtSignature", key.Int(), partKey.Int()), translator.SkipThoughtSignatureValidator)
 				}
 				return true
 			})

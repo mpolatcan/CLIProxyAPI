@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/translator"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -233,9 +234,9 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 					// Ignore any late thought chunks after reasoning is finalized.
 					return true
 				}
-				if sig := part.Get("thoughtSignature"); sig.Exists() && sig.String() != "" && sig.String() != geminiResponsesThoughtSignature {
+				if sig := part.Get("thoughtSignature"); sig.Exists() && sig.String() != "" && sig.String() != translator.SkipThoughtSignatureValidator {
 					st.ReasoningEnc = sig.String()
-				} else if sig = part.Get("thought_signature"); sig.Exists() && sig.String() != "" && sig.String() != geminiResponsesThoughtSignature {
+				} else if sig = part.Get("thought_signature"); sig.Exists() && sig.String() != "" && sig.String() != translator.SkipThoughtSignatureValidator {
 					st.ReasoningEnc = sig.String()
 				}
 				if !st.ReasoningOpened {

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cache"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/translator"
 	"github.com/tidwall/gjson"
 )
 
@@ -233,8 +234,8 @@ func TestConvertClaudeRequestToAntigravity_ToolUse(t *testing.T) {
 	if funcCall.Get("id").String() != "call_123" {
 		t.Errorf("Expected function id 'call_123', got '%s'", funcCall.Get("id").String())
 	}
-	// Verify skip_thought_signature_validator is added (bypass for tools without valid thinking)
-	expectedSig := "skip_thought_signature_validator"
+	// Verify skip sentinel is added (bypass for tools without valid thinking)
+	expectedSig := translator.SkipThoughtSignatureValidator
 	actualSig := parts[0].Get("thoughtSignature").String()
 	if actualSig != expectedSig {
 		t.Errorf("Expected thoughtSignature '%s', got '%s'", expectedSig, actualSig)
