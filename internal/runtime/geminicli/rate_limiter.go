@@ -19,8 +19,8 @@ type RateLimitConfig struct {
 // DefaultRateLimitConfig returns the default rate limiting configuration.
 func DefaultRateLimitConfig() RateLimitConfig {
 	return RateLimitConfig{
-		MinRequestInterval: 500 * time.Millisecond, // 2 requests per second max
-		QuotaCooldown:      10 * time.Second,       // 10s cooldown after 429
+		MinRequestInterval: 1 * time.Second,        // 1 request per second max
+		QuotaCooldown:      15 * time.Second,       // 15s cooldown after 429
 		MaxConcurrent:      1,                      // Sequential requests per account
 	}
 }
